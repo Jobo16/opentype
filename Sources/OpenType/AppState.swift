@@ -58,9 +58,7 @@ final class AppState: ObservableObject {
         loadHotkey()
         setupHotkeyCallback()
         setupAudioLevelForwarding()
-        mainWindow.configure(appState: self) { [weak self] in
-            self?.openSettings()
-        }
+        mainWindow.configure(appState: self)
         // Show main window after a short delay to let the app fully initialize
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             self?.showMainWindow()
@@ -75,11 +73,6 @@ final class AppState: ObservableObject {
 
     func showMainWindow() {
         mainWindow.show()
-    }
-
-    func openSettings() {
-        NSApp.activate(ignoringOtherApps: true)
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
     }
 
     // MARK: - Hotkey

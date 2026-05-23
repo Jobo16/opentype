@@ -5,10 +5,6 @@ struct OpenTypeApp: App {
     @StateObject private var appState = AppState()
 
     var body: some Scene {
-        Settings {
-            SettingsView()
-        }
-
         MenuBarExtra("OpenType", systemImage: "waveform") {
             MenuBarView(appState: appState)
         }

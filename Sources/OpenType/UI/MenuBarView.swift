@@ -4,7 +4,6 @@ struct MenuBarView: View {
     @ObservedObject var appState: AppState
 
     var body: some View {
-        // Status + toggle
         Button {
             appState.toggleRecording()
         } label: {
@@ -22,29 +21,23 @@ struct MenuBarView: View {
             Text(appState.lastTranscript)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .lineLimit(3)
+                .lineLimit(2)
                 .frame(maxWidth: 260, alignment: .leading)
         }
 
         Divider()
-
-        // Hotkey hint
-        HStack {
-            Text("快捷键")
-            Spacer()
-            Text(appState.hotkeyDisplayName)
-                .foregroundStyle(.secondary)
-        }
 
         Button("主窗口") {
             appState.toggleMainWindow()
         }
         .keyboardShortcut("o", modifiers: [.command])
 
-        Button("设置…") {
-            appState.openSettings()
+        HStack {
+            Text("快捷键")
+            Spacer()
+            Text(appState.hotkeyDisplayName)
+                .foregroundStyle(.secondary)
         }
-        .keyboardShortcut(",", modifiers: [.command])
 
         Divider()
 

@@ -6,11 +6,9 @@ final class MainWindowController {
 
     private var window: NSWindow?
     private var appState: AppState?
-    private var onOpenSettings: (() -> Void)?
 
-    func configure(appState: AppState, onOpenSettings: @escaping () -> Void) {
+    func configure(appState: AppState) {
         self.appState = appState
-        self.onOpenSettings = onOpenSettings
     }
 
     func toggle() {
@@ -39,12 +37,9 @@ final class MainWindowController {
     private func createWindow() {
         guard let appState else { return }
 
-        let panelView = MainPanelView(appState: appState) { [weak self] in
-            self?.onOpenSettings?()
-        }
-
+        let panelView = MainPanelView(appState: appState)
         let hostingView = NSHostingView(rootView: panelView)
-        let contentRect = NSRect(x: 0, y: 0, width: 400, height: 420)
+        let contentRect = NSRect(x: 0, y: 0, width: 420, height: 480)
 
         let window = NSWindow(
             contentRect: contentRect,
@@ -60,19 +55,14 @@ final class MainWindowController {
         window.titlebarAppearsTransparent = false
         window.titleVisibility = .visible
         window.backgroundColor = NSColor.windowBackgroundColor
-
-        // Make window appear in front
         window.level = .floating
         window.collectionBehavior = [.canJoinAllSpaces, .stationary]
-
-        // Remember close to hide behavior
         window.delegate = CloseHandler(windowController: self)
 
         self.window = window
     }
 }
 
-/// Intercepts window close to hide instead of destroy.
 private final class CloseHandler: NSObject, NSWindowDelegate {
     weak var windowController: MainWindowController?
 
