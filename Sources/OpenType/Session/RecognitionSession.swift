@@ -60,9 +60,16 @@ actor RecognitionSession {
 
     // MARK: - Pipeline
 
-    func start(config: any ASRProviderConfig, options: ASRRequestOptions = ASRRequestOptions()) async {
+    func start(config: any ASRProviderConfig, options: ASRRequestOptions? = nil) async {
         guard phase == .idle || phase == .done else { return }
         setPhase(.recording)
+
+        // Load hotwords for ASR boosting
+        let hotwords = HotwordStore.shared.getAllWords()
+        var effectiveOptions = options ?? ASRRequestOptions()
+        if !hotwords.isEmpty {
+            effectiveOptions.hotwords = hotwords
+        }
 
         do {
             // 1. Start audio capture.
@@ -74,7 +81,7 @@ actor RecognitionSession {
                 return
             }
             self.transcriber = client
-            try await client.connect(config: config, options: options)
+            try await client.connect(config: config, options: effectiveOptions)
 
             // 3. Stream audio → ASR until capture stops.
             setPhase(.recording)
@@ -172,7 +179,8 @@ actor RecognitionSession {
             return text
         }
         let client = DeepSeekClient()
-        let prompt = PromptBuilder.buildPrompt()
+        let hotwords = HotwordStore.shared.getAllWords()
+        let prompt = PromptBuilder.buildPrompt(hotwords: hotwords)
         do {
             let result = try await client.chat(systemPrompt: prompt, userMessage: text, config: config)
             guard !result.isEmpty else { return text }
