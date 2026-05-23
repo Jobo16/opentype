@@ -42,7 +42,8 @@ final class AppState: ObservableObject {
     @Published var lastTranscript: String = ""
     @Published var errorMessage: String = ""
     @Published var hotkeyDisplayName: String = "Option+Space"
-    @Published var history: [HistoryItem] = []
+    @Published var historyRecords: [HistoryStore.Record] = []
+    @Published var historySearch: String = ""
 
     // MARK: - Dependencies
 
@@ -50,7 +51,10 @@ final class AppState: ObservableObject {
     private let hotkeyManager = HotkeyManager()
     private let floatingBar = FloatingBarController()
     let mainWindow = MainWindowController()
+    private let historyStore = HistoryStore.shared
     private var phaseTask: Task<Void, Never>?
+    private var recordingStartTime: Date?
+    private var lastRawText: String = ""
 
     // MARK: - Init
 
@@ -59,7 +63,7 @@ final class AppState: ObservableObject {
         setupHotkeyCallback()
         setupAudioLevelForwarding()
         mainWindow.configure(appState: self)
-        // Show main window after a short delay to let the app fully initialize
+        loadHistory()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             self?.showMainWindow()
         }
@@ -67,13 +71,8 @@ final class AppState: ObservableObject {
 
     // MARK: - Main Window
 
-    func toggleMainWindow() {
-        mainWindow.toggle()
-    }
-
-    func showMainWindow() {
-        mainWindow.show()
-    }
+    func toggleMainWindow() { mainWindow.toggle() }
+    func showMainWindow() { mainWindow.show() }
 
     // MARK: - Hotkey
 
@@ -84,9 +83,7 @@ final class AppState: ObservableObject {
 
     private func setupHotkeyCallback() {
         hotkeyManager.onToggle = { [weak self] in
-            Task { @MainActor in
-                self?.toggleRecording()
-            }
+            Task { @MainActor in self?.toggleRecording() }
         }
         enableHotkey()
     }
@@ -101,19 +98,12 @@ final class AppState: ObservableObject {
         hotkeyDisplayName = binding.displayName
     }
 
-    func updateHotkey(_ string: String) {
-        CredentialService.hotkeyString = string
-        enableHotkey()
-    }
-
-    // MARK: - Recording actions
+    // MARK: - Recording
 
     func toggleRecording() {
         switch phase {
-        case .idle, .done, .error:
-            startRecording()
-        case .recording, .transcribing, .optimizing, .injecting:
-            cancel()
+        case .idle, .done, .error: startRecording()
+        case .recording, .transcribing, .optimizing, .injecting: cancel()
         }
     }
 
@@ -123,12 +113,13 @@ final class AppState: ObservableObject {
         guard let config = CredentialService.loadASRConfig(for: .volcano), config.isValid else {
             errorMessage = "请先在设置中配置火山引擎凭证"
             phase = .error
-            logger.warning("No valid ASR config found")
             return
         }
 
         lastTranscript = ""
+        lastRawText = ""
         errorMessage = ""
+        recordingStartTime = Date()
         phase = .recording
 
         phaseTask?.cancel()
@@ -137,14 +128,18 @@ final class AppState: ObservableObject {
             await self.session.start(config: config)
 
             guard !Task.isCancelled else { return }
-            let result = await self.session.lastResult
-            self.lastTranscript = result
-            if !result.isEmpty {
-                self.addHistory(result)
+            let raw = await self.session.lastRawText
+            let optimized = await self.session.lastResult
+            let duration = self.recordingStartTime.map { Date().timeIntervalSince($0) } ?? 0
+
+            self.lastRawText = raw
+            self.lastTranscript = optimized.isEmpty ? raw : optimized
+
+            if !raw.isEmpty {
+                self.saveHistoryRecord(raw: raw, optimized: optimized, duration: duration)
             }
         }
 
-        // Observe phase events from the session
         Task { [weak self] in
             guard let self else { return }
             let events = await self.session.phaseEvents
@@ -167,9 +162,7 @@ final class AppState: ObservableObject {
 
     private func setupAudioLevelForwarding() {
         session.setAudioLevelHandler { [weak self] level in
-            Task { @MainActor [weak self] in
-                self?.audioLevel = level
-            }
+            Task { @MainActor [weak self] in self?.audioLevel = level }
         }
     }
 
@@ -190,11 +183,7 @@ final class AppState: ObservableObject {
     private func updateFloatingBar() {
         switch phase {
         case .recording, .transcribing, .optimizing, .injecting:
-            floatingBar.show(
-                phase: phase.label,
-                audioLevel: audioLevel,
-                transcript: lastTranscript
-            )
+            floatingBar.show(phase: phase.label, audioLevel: audioLevel, transcript: lastTranscript)
         case .done:
             floatingBar.hide(after: 1.5)
         case .error:
@@ -206,20 +195,52 @@ final class AppState: ObservableObject {
 
     private func updateFloatingBarLevel() {
         guard phase == .recording else { return }
-        floatingBar.update(
-            phase: phase.label,
-            audioLevel: audioLevel,
-            transcript: lastTranscript
-        )
+        floatingBar.update(phase: phase.label, audioLevel: audioLevel, transcript: lastTranscript)
     }
 
     // MARK: - History
 
-    private func addHistory(_ text: String) {
-        let item = HistoryItem(text: text, timestamp: Date())
-        history.insert(item, at: 0)
-        if history.count > 20 {
-            history = Array(history.prefix(20))
+    func loadHistory() {
+        if historySearch.isEmpty {
+            historyRecords = historyStore.getAll()
+        } else {
+            historyRecords = historyStore.search(keyword: historySearch)
         }
+    }
+
+    private func saveHistoryRecord(raw: String, optimized: String, duration: TimeInterval) {
+        let record = HistoryStore.Record(
+            rawText: raw,
+            optimizedText: optimized,
+            mode: CredentialService.isLLMEnabled ? "llm" : "direct",
+            duration: duration
+        )
+        historyStore.add(record)
+        loadHistory()
+    }
+
+    func deleteHistory(id: UUID) {
+        historyStore.delete(id: id)
+        loadHistory()
+    }
+
+    func clearHistory() {
+        historyStore.deleteAll()
+        loadHistory()
+    }
+
+    func searchHistory(_ keyword: String) {
+        historySearch = keyword
+        loadHistory()
+    }
+
+    func exportHistoryCSV() -> URL? {
+        let records = historySearch.isEmpty ? nil : historyRecords
+        return historyStore.exportCSV(filtered: records)
+    }
+
+    func insertTextFromHistory(_ text: String) {
+        let injector = TextInjectionEngine()
+        Task { try? await injector.inject(text) }
     }
 }

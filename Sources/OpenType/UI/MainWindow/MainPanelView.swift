@@ -160,31 +160,91 @@ struct MainPanelView: View {
 
     private var historySection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if appState.history.isEmpty {
+            // Header + search
+            HStack(spacing: 8) {
+                Text("历史记录")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Text("\(appState.historyRecords.count)")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                Spacer()
+
+                // Export CSV
+                Button {
+                    if let url = appState.exportHistoryCSV() {
+                        NSWorkspace.shared.open(url)
+                    }
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(.plain)
+                .help("导出 CSV")
+
+                // Clear all
+                Button {
+                    appState.clearHistory()
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.red)
+                }
+                .buttonStyle(.plain)
+                .help("清空历史")
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
+
+            // Search bar
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                TextField("搜索…", text: Binding(
+                    get: { appState.historySearch },
+                    set: { appState.searchHistory($0) }
+                ))
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+
+                if !appState.historySearch.isEmpty {
+                    Button {
+                        appState.searchHistory("")
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
+            .padding(.horizontal, 16)
+            .padding(.bottom, 4)
+
+            Divider()
+
+            // Records list
+            if appState.historyRecords.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "text.justify.left")
                         .font(.title2)
                         .foregroundStyle(.tertiary)
-                    Text("暂无识别记录")
+                    Text(appState.historySearch.isEmpty ? "暂无识别记录" : "无匹配结果")
                         .font(.system(size: 12))
                         .foregroundStyle(.tertiary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                HStack {
-                    Text("最近识别")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(appState.history) { item in
-                            HistoryRow(item: item)
-                            if item.id != appState.history.last?.id {
+                        ForEach(appState.historyRecords) { record in
+                            HistoryRecordRow(record: record, appState: appState)
+                            if record.id != appState.historyRecords.last?.id {
                                 Divider().padding(.horizontal, 16)
                             }
                         }
@@ -410,52 +470,115 @@ struct LLMSettingsInline: View {
     }
 }
 
-// MARK: - History Item & Row
+// MARK: - History Record Row
 
-struct HistoryItem: Identifiable {
-    let id = UUID()
-    let text: String
-    let timestamp: Date
-    var timeString: String {
-        let f = DateFormatter(); f.dateFormat = "HH:mm"
-        return f.string(from: timestamp)
-    }
-}
-
-struct HistoryRow: View {
-    let item: HistoryItem
+struct HistoryRecordRow: View {
+    let record: HistoryStore.Record
+    @ObservedObject var appState: AppState
     @State private var copied = false
+    @State private var showDeleteConfirm = false
+
+    private var timeString: String {
+        let f = DateFormatter(); f.dateFormat = "HH:mm"
+        return f.string(from: record.timestamp)
+    }
+
+    private var dateString: String {
+        let f = DateFormatter(); f.dateFormat = "MM/dd"
+        return f.string(from: record.timestamp)
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            Text(item.text)
-                .font(.system(size: 13))
-                .lineLimit(2)
-                .foregroundStyle(.primary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(record.displayText)
+                    .font(.system(size: 13))
+                    .lineLimit(2)
+                    .foregroundStyle(.primary)
+
+                // Show raw text if LLM optimized
+                if !record.optimizedText.isEmpty && record.rawText != record.optimizedText {
+                    Text("原文: \(record.rawText)")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+
+                HStack(spacing: 6) {
+                    Text("\(dateString) \(timeString)")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.quaternary)
+                    if record.duration > 0 {
+                        Text(String(format: "%.1fs", record.duration))
+                            .font(.system(size: 9))
+                            .foregroundStyle(.quaternary)
+                    }
+                    if record.mode == "llm" {
+                        Text("LLM")
+                            .font(.system(size: 8, weight: .medium))
+                            .padding(.horizontal, 3)
+                            .padding(.vertical, 1)
+                            .background(Color.purple.opacity(0.15), in: RoundedRectangle(cornerRadius: 2))
+                            .foregroundStyle(.purple)
+                    }
+                }
+            }
+
             Spacer(minLength: 4)
-            VStack(spacing: 4) {
-                Text(item.timeString)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
+
+            VStack(spacing: 6) {
+                // Copy
                 Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(item.text, forType: .string)
+                    copyToClipboard(record.displayText)
                     copied = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
                 } label: {
                     Image(systemName: copied ? "checkmark" : "doc.on.doc")
                         .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .help("复制文本")
+
+                // Re-insert at cursor
+                Button {
+                    appState.insertTextFromHistory(record.displayText)
+                } label: {
+                    Image(systemName: "arrow.up.doc")
+                        .font(.system(size: 10))
+                }
+                .buttonStyle(.plain)
+                .help("插入到光标位置")
+
+                // Delete
+                Button {
+                    showDeleteConfirm = true
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.red.opacity(0.6))
+                }
+                .buttonStyle(.plain)
+                .help("删除")
+                .alert("确认删除", isPresented: $showDeleteConfirm) {
+                    Button("取消", role: .cancel) {}
+                    Button("删除", role: .destructive) {
+                        appState.deleteHistory(id: record.id)
+                    }
+                } message: {
+                    Text("确定要删除这条记录吗？")
+                }
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .contentShape(Rectangle())
         .onTapGesture {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(item.text, forType: .string)
+            copyToClipboard(record.displayText)
         }
+    }
+
+    private func copyToClipboard(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 }

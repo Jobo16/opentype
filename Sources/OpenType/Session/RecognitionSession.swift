@@ -53,7 +53,9 @@ actor RecognitionSession {
         }
     }
 
-    /// The final transcribed text after injection.
+    /// The raw ASR text (before LLM optimization).
+    private(set) var lastRawText: String = ""
+    /// The final text after injection (may include LLM optimization).
     private(set) var lastResult: String = ""
 
     // MARK: - Pipeline
@@ -91,6 +93,8 @@ actor RecognitionSession {
                 setPhase(.done)
                 return
             }
+
+            self.lastRawText = finalText
 
             // 6. Optional LLM post-processing.
             let processedText: String
