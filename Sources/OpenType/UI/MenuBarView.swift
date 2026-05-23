@@ -38,10 +38,8 @@ struct MenuBarView: View {
 
         Button("设置…") {
             NSApp.activate(ignoringOtherApps: true)
-            if #available(macOS 14.0, *) {
-                NSApp.mainMenu?.items.first?.submenu?.item(withTitle: "Settings…")?
-                    .performSelector(onMainThread: NSSelectorFromString("_performClick"), with: nil, waitUntilDone: false)
-            }
+            // macOS 13+ uses showSettingsWindow: for SwiftUI Settings scene
+            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
         }
         .keyboardShortcut(",", modifiers: [.command])
 
