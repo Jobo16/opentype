@@ -32,12 +32,9 @@ struct MenuBarView: View {
         }
         .keyboardShortcut("o", modifiers: [.command])
 
-        HStack {
-            Text("快捷键")
-            Spacer()
-            Text(appState.hotkeyDisplayName)
-                .foregroundStyle(.secondary)
-        }
+        Text("快捷键  \(appState.hotkeyDisplayName)")
+            .foregroundStyle(.secondary)
+            .font(.callout)
 
         Divider()
 
