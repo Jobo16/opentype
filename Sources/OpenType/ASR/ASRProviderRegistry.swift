@@ -15,6 +15,13 @@ enum ASRProviderRegistry {
         ),
     ]
 
+    /// Returns the config type for a provider (used by CredentialService for field definitions).
+    static func configType(for provider: ASRProvider) -> (any ASRProviderConfig.Type)? {
+        switch provider {
+        case .volcano: return VolcanoASRConfig.self
+        }
+    }
+
     /// Returns the registry entry for a provider, or nil if unknown.
     static func entry(for provider: ASRProvider) -> Entry? {
         all[provider]

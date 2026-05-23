@@ -1,22 +1,76 @@
 import SwiftUI
 
 struct MenuBarView: View {
-    @State private var isRecording = false
+    @Bindable var appState: AppState
 
     var body: some View {
-        Button("开始录音") {
-            isRecording.toggle()
+        // Status + toggle
+        Button {
+            appState.toggleRecording()
+        } label: {
+            HStack {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 8, height: 8)
+                Text(statusText)
+            }
         }
+        .keyboardShortcut("r", modifiers: [.command])
+
+        if !appState.lastTranscript.isEmpty {
+            Divider()
+            Text(appState.lastTranscript)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
+                .frame(maxWidth: 260, alignment: .leading)
+        }
+
         Divider()
+
+        // Hotkey hint
+        HStack {
+            Text("快捷键")
+            Spacer()
+            Text(appState.hotkeyDisplayName)
+                .foregroundStyle(.secondary)
+        }
+
         Button("设置…") {
             NSApp.activate(ignoringOtherApps: true)
             if #available(macOS 14.0, *) {
-                NSApp.mainMenu?.items.first?.submenu?.item(withTitle: "Settings…")?.performSelector(onMainThread: NSSelectorFromString("_performClick"), with: nil, waitUntilDone: false)
+                NSApp.mainMenu?.items.first?.submenu?.item(withTitle: "Settings…")?
+                    .performSelector(onMainThread: NSSelectorFromString("_performClick"), with: nil, waitUntilDone: false)
             }
         }
+        .keyboardShortcut(",", modifiers: [.command])
+
         Divider()
+
         Button("退出") {
             NSApp.terminate(nil)
+        }
+        .keyboardShortcut("q", modifiers: [.command])
+    }
+
+    private var statusText: String {
+        switch appState.phase {
+        case .idle: return "开始录音"
+        case .recording: return "停止录音"
+        case .transcribing: return "识别中…"
+        case .injecting: return "输入中…"
+        case .done: return "开始录音"
+        case .error: return "开始录音"
+        }
+    }
+
+    private var statusColor: Color {
+        switch appState.phase {
+        case .recording: return .red
+        case .transcribing, .injecting: return .orange
+        case .done: return .green
+        case .error: return .red
+        case .idle: return .secondary
         }
     }
 }
