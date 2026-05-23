@@ -1,0 +1,22 @@
+# macOS
+.DS_Store
+*.swp
+*~
+
+# Swift
+.build/
+.swiftpm/
+DerivedData/
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+
+# App bundle artifacts
+*.app/
+*.dmg
+
+# Credentials & secrets
+*.credentials.json
+*.env
