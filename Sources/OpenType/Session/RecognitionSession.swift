@@ -10,6 +10,7 @@ actor RecognitionSession {
         case idle
         case recording
         case transcribing
+        case optimizing
         case injecting
         case done
         case error(String)
@@ -17,7 +18,8 @@ actor RecognitionSession {
         static func == (lhs: Phase, rhs: Phase) -> Bool {
             switch (lhs, rhs) {
             case (.idle, .idle), (.recording, .recording),
-                 (.transcribing, .transcribing), (.injecting, .injecting),
+                 (.transcribing, .transcribing), (.optimizing, .optimizing),
+                 (.injecting, .injecting),
                  (.done, .done): return true
             case (.error(let a), .error(let b)): return a == b
             default: return false
@@ -90,10 +92,19 @@ actor RecognitionSession {
                 return
             }
 
-            // 6. Inject text into the active app.
+            // 6. Optional LLM post-processing.
+            let processedText: String
+            if CredentialService.isLLMEnabled {
+                setPhase(.optimizing)
+                processedText = await optimizeWithLLM(finalText)
+            } else {
+                processedText = finalText
+            }
+
+            // 7. Inject text into the active app.
             setPhase(.injecting)
-            try await injector.inject(finalText)
-            self.lastResult = finalText
+            try await injector.inject(processedText)
+            self.lastResult = processedText
             setPhase(.done)
 
         } catch {
@@ -148,5 +159,24 @@ actor RecognitionSession {
     private func setPhase(_ newPhase: Phase) {
         self.phase = newPhase
         eventContinuation?.yield(newPhase)
+    }
+
+    private func optimizeWithLLM(_ text: String) async -> String {
+        let config = CredentialService.loadLLMConfig()
+        guard config.isValid else {
+            logger.warning("LLM not configured, using raw ASR text")
+            return text
+        }
+        let client = DeepSeekClient()
+        let prompt = PromptBuilder.buildPrompt()
+        do {
+            let result = try await client.chat(systemPrompt: prompt, userMessage: text, config: config)
+            guard !result.isEmpty else { return text }
+            logger.info("LLM optimized: \(text.count) → \(result.count) chars")
+            return result
+        } catch {
+            logger.error("LLM failed: \(error.localizedDescription), using raw text")
+            return text
+        }
     }
 }

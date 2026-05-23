@@ -94,6 +94,52 @@ enum CredentialService {
         return configType.init(credentials: defaults)
     }
 
+    // MARK: - LLM Config
+
+    private static let llmKey = "llm_config"
+    private static let llmSecureAccount = "llm_apikey"
+
+    static func saveLLMConfig(_ config: LLMConfig) throws {
+        lock.lock()
+        defer { lock.unlock() }
+
+        // API key → Keychain
+        if config.apiKey.isEmpty {
+            _ = deleteSecure(account: llmSecureAccount)
+        } else {
+            try saveSecureData(Data(config.apiKey.utf8), account: llmSecureAccount)
+        }
+
+        // model + baseURL → JSON
+        var dict = _loadJSONUnlocked()
+        dict[llmKey] = [
+            "model": config.model,
+            "baseURL": config.baseURL,
+        ]
+        try saveJSON(dict)
+    }
+
+    static func loadLLMConfig() -> LLMConfig {
+        let dict = loadJSON()
+        let llmDict = dict[llmKey] as? [String: String] ?? [:]
+        let apiKey = loadSecureData(account: llmSecureAccount)
+            .flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        return LLMConfig(
+            apiKey: apiKey,
+            model: llmDict["model"] ?? "deepseek-v4-flash",
+            baseURL: llmDict["baseURL"] ?? "https://api.deepseek.com"
+        )
+    }
+
+    // MARK: - LLM enabled flag
+
+    private static let llmEnabledKey = "ot_llm_enabled"
+
+    static var isLLMEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: llmEnabledKey) }
+        set { UserDefaults.standard.set(newValue, forKey: llmEnabledKey) }
+    }
+
     // MARK: - Hotkey (UserDefaults)
 
     private static let hotkeyKey = "ot_hotkey"

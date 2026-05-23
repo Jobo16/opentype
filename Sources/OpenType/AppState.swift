@@ -15,6 +15,7 @@ final class AppState {
         case idle
         case recording
         case transcribing
+        case optimizing
         case injecting
         case done
         case error
@@ -24,6 +25,7 @@ final class AppState {
             case .idle: return "就绪"
             case .recording: return "录音中…"
             case .transcribing: return "识别中…"
+            case .optimizing: return "优化中…"
             case .injecting: return "输入中…"
             case .done: return "完成"
             case .error: return "出错"
@@ -93,7 +95,7 @@ final class AppState {
         switch phase {
         case .idle, .done, .error:
             startRecording()
-        case .recording, .transcribing, .injecting:
+        case .recording, .transcribing, .optimizing, .injecting:
             cancel()
         }
     }
@@ -156,6 +158,7 @@ final class AppState {
         case .idle: return .idle
         case .recording: return .recording
         case .transcribing: return .transcribing
+        case .optimizing: return .optimizing
         case .injecting: return .injecting
         case .done: return .done
         case .error: return .error
@@ -166,7 +169,7 @@ final class AppState {
 
     private func updateFloatingBar() {
         switch phase {
-        case .recording, .transcribing, .injecting:
+        case .recording, .transcribing, .optimizing, .injecting:
             floatingBar.show(
                 phase: phase.label,
                 audioLevel: audioLevel,

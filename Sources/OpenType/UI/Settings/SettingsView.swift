@@ -7,8 +7,10 @@ struct SettingsView: View {
                 .tabItem { Label("通用", systemImage: "gear") }
             ASRSettingsView()
                 .tabItem { Label("语音识别", systemImage: "waveform") }
+            LLMSettingsView()
+                .tabItem { Label("LLM", systemImage: "sparkles") }
         }
-        .frame(width: 460, height: 320)
+        .frame(width: 500, height: 360)
     }
 }
 
@@ -129,6 +131,104 @@ struct ASRSettingsView: View {
                 "accessKey": accessKey,
                 "resourceId": resourceId,
             ])
+            saveSuccess = true
+        } catch {
+            saveError = "保存失败: \(error.localizedDescription)"
+        }
+    }
+}
+
+// MARK: - LLM Settings
+
+struct LLMSettingsView: View {
+    @State private var enabled = CredentialService.isLLMEnabled
+    @State private var apiKey: String = ""
+    @State private var model: String = "deepseek-v4-flash"
+    @State private var baseURL: String = "https://api.deepseek.com"
+    @State private var saveError: String = ""
+    @State private var saveSuccess = false
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("启用 LLM 文本优化", isOn: $enabled)
+                    .onChange(of: enabled) { _, newValue in
+                        CredentialService.isLLMEnabled = newValue
+                    }
+            } footer: {
+                Text("开启后，识别文本会经过 DeepSeek 大模型优化：去语气词、修同音字、补标点、数字格式化")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if enabled {
+                Section {
+                    HStack {
+                        Text("API Key")
+                        Spacer()
+                        SecureField("DeepSeek API Key", text: $apiKey)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 280)
+                    }
+                    HStack {
+                        Text("模型")
+                        Spacer()
+                        Picker("", selection: $model) {
+                            Text("deepseek-v4-flash（快速）").tag("deepseek-v4-flash")
+                            Text("deepseek-v4-pro（精准）").tag("deepseek-v4-pro")
+                        }
+                        .frame(width: 280)
+                    }
+                    HStack {
+                        Text("API 地址")
+                        Spacer()
+                        TextField("https://api.deepseek.com", text: $baseURL)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 280)
+                    }
+                } header: {
+                    Text("DeepSeek 配置")
+                } footer: {
+                    Text("在 platform.deepseek.com 获取 API Key")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section {
+                    HStack {
+                        if saveSuccess {
+                            Text("已保存")
+                                .foregroundStyle(.green)
+                        }
+                        if !saveError.isEmpty {
+                            Text(saveError)
+                                .foregroundStyle(.red)
+                        }
+                        Spacer()
+                        Button("保存") {
+                            saveLLM()
+                        }
+                    }
+                }
+            }
+        }
+        .padding()
+        .onAppear { loadLLM() }
+    }
+
+    private func loadLLM() {
+        let config = CredentialService.loadLLMConfig()
+        apiKey = config.apiKey
+        model = config.model
+        baseURL = config.baseURL
+    }
+
+    private func saveLLM() {
+        saveError = ""
+        saveSuccess = false
+        do {
+            let config = LLMConfig(apiKey: apiKey, model: model, baseURL: baseURL)
+            try CredentialService.saveLLMConfig(config)
             saveSuccess = true
         } catch {
             saveError = "保存失败: \(error.localizedDescription)"

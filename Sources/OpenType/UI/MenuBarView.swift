@@ -58,6 +58,7 @@ struct MenuBarView: View {
         case .idle: return "开始录音"
         case .recording: return "停止录音"
         case .transcribing: return "识别中…"
+        case .optimizing: return "优化中…"
         case .injecting: return "输入中…"
         case .done: return "开始录音"
         case .error: return "开始录音"
@@ -67,7 +68,7 @@ struct MenuBarView: View {
     private var statusColor: Color {
         switch appState.phase {
         case .recording: return .red
-        case .transcribing, .injecting: return .orange
+        case .transcribing, .optimizing, .injecting: return .orange
         case .done: return .green
         case .error: return .red
         case .idle: return .secondary
