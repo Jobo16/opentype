@@ -259,35 +259,52 @@ struct LLMSettingsView: View {
 
 enum VolcanoConnectionTester {
 
+    /// Resolve "auto" to the actual resource ID before sending.
+    private static func resolveResourceId(_ raw: String) -> String {
+        if raw == "auto" || raw.isEmpty {
+            return VolcanoASRConfig.resourceIdSeedASR
+        }
+        return raw
+    }
+
     static func test(
         appKey: String,
         accessKey: String,
         resourceId: String
     ) async -> ASRSettingsView.TestResult {
+        let resolvedResourceId = resolveResourceId(resourceId)
+        NSLog("[VolcanoTest] Testing with appKey=%@, resourceId=%@", appKey, resolvedResourceId)
+
         let url = URL(string: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async")!
         var request = URLRequest(url: url)
         request.setValue(appKey, forHTTPHeaderField: "X-Api-App-Key")
         request.setValue(accessKey, forHTTPHeaderField: "X-Api-Access-Key")
-        request.setValue(resourceId, forHTTPHeaderField: "X-Api-Resource-Id")
+        request.setValue(resolvedResourceId, forHTTPHeaderField: "X-Api-Resource-Id")
         request.setValue(UUID().uuidString, forHTTPHeaderField: "X-Api-Connect-Id")
         request.timeoutInterval = 10
 
         return await withCheckedContinuation { continuation in
+            var resumed = false
+            func resumeOnce(_ result: ASRSettingsView.TestResult) {
+                guard !resumed else { return }
+                resumed = true
+                continuation.resume(returning: result)
+            }
+
             let session = URLSession(configuration: .default)
             let task = session.webSocketTask(with: request)
 
-            // Use a timer to detect timeout
             let timer = DispatchSource.makeTimerSource()
             timer.schedule(deadline: .now() + 10)
             timer.setEventHandler {
                 task.cancel(with: .normalClosure, reason: nil)
-                continuation.resume(returning: .failure("连接超时"))
+                resumeOnce(.failure("连接超时"))
             }
             timer.resume()
 
             task.resume()
 
-            // Send the initial handshake payload to verify auth
+            // Send the initial handshake payload
             let payload = VolcProtocol.buildClientRequest(uid: UUID().uuidString)
             let header = VolcHeader(
                 messageType: .fullClientRequest,
@@ -297,17 +314,85 @@ enum VolcanoConnectionTester {
             )
             let message = VolcProtocol.encodeMessage(header: header, payload: payload)
 
-            task.send(.data(message)) { error in
-                timer.cancel()
-                if let error {
-                    continuation.resume(returning: .failure("发送失败: \(error.localizedDescription)"))
+            task.send(.data(message)) { sendError in
+                if let sendError {
+                    timer.cancel()
+                    NSLog("[VolcanoTest] Send failed: %@", sendError.localizedDescription)
+                    resumeOnce(.failure("发送失败: \(sendError.localizedDescription)"))
                     return
                 }
 
-                // If send succeeded, credentials are valid (server accepted the connection)
-                task.cancel(with: .normalClosure, reason: nil)
-                continuation.resume(returning: .success("连接成功"))
+                NSLog("[VolcanoTest] Send succeeded, waiting for server response...")
+
+                // Wait for server response to verify auth is valid
+                task.receive { result in
+                    timer.cancel()
+                    switch result {
+                    case .success(let message):
+                        switch message {
+                        case .data(let data):
+                            // Try to parse the server response
+                            if data.count >= 4 {
+                                let headerByte1 = data[1]
+                                let msgType = (headerByte1 >> 4) & 0x0F
+                                if msgType == 0x0F {
+                                    // Server error
+                                    let detail = Self.parseServerError(data)
+                                    NSLog("[VolcanoTest] Server rejected: %@", detail)
+                                    resumeOnce(.failure("认证失败: \(detail)"))
+                                } else {
+                                    NSLog("[VolcanoTest] Got server response (type=0x%02X), auth OK", msgType)
+                                    resumeOnce(.success("连接成功"))
+                                }
+                            } else {
+                                NSLog("[VolcanoTest] Got response but too short (%d bytes)", data.count)
+                                resumeOnce(.success("连接成功"))
+                            }
+                        case .string(let text):
+                            NSLog("[VolcanoTest] Got text response: %@", text)
+                            resumeOnce(.success("连接成功"))
+                        @unknown default:
+                            resumeOnce(.success("连接成功"))
+                        }
+                    case .failure(let error):
+                        NSLog("[VolcanoTest] Receive failed: %@", error.localizedDescription)
+                        // If receive fails immediately, it might be an auth rejection
+                        let nsError = error as NSError
+                        if nsError.code == 2000 || nsError.domain == "NSPOSIXErrorDomain" {
+                            resumeOnce(.failure("认证失败: \(error.localizedDescription)"))
+                        } else {
+                            resumeOnce(.failure("接收失败: \(error.localizedDescription)"))
+                        }
+                    }
+                }
             }
         }
+    }
+
+    private static func parseServerError(_ data: Data) -> String {
+        // Parse the raw response to find error info
+        guard data.count >= 4 else { return "响应数据过短" }
+
+        // Skip header (4 bytes) and optional sequence number (4 bytes)
+        var offset = 4
+        let flags = data[1] & 0x0F
+        if flags == 0x03 || flags == 0x01 { // negativeSequenceLast or positiveSequence
+            offset += 4
+        }
+
+        guard data.count >= offset + 4 else { return "无效响应" }
+        let sizeBytes = data[offset..<offset+4]
+        let payloadSize = Int(UInt32(bigEndian: sizeBytes.withUnsafeBytes { $0.load(as: UInt32.self) }))
+        offset += 4
+
+        guard data.count >= offset + payloadSize else { return "载荷截断" }
+        let payload = data[offset..<offset+payloadSize]
+
+        if let json = try? JSONSerialization.jsonObject(with: Data(payload)) as? [String: Any] {
+            let code = json["code"] as? Int ?? -1
+            let message = json["message"] as? String ?? "未知错误"
+            return "code=\(code), \(message)"
+        }
+        return "无法解析错误信息"
     }
 }

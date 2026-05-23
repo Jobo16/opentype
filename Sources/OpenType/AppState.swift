@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import os
+import AppKit
 
 /// Central app state coordinator. Owns the recognition session and hotkey manager.
 @Observable
@@ -42,12 +43,14 @@ final class AppState {
     var lastTranscript: String = ""
     var errorMessage: String = ""
     var hotkeyDisplayName: String = "Option+Space"
+    var history: [HistoryItem] = []
 
     // MARK: - Dependencies
 
     private let session = RecognitionSession()
     private let hotkeyManager = HotkeyManager()
     private let floatingBar = FloatingBarController()
+    let mainWindow = MainWindowController()
     private var phaseTask: Task<Void, Never>?
 
     // MARK: - Init
@@ -56,6 +59,24 @@ final class AppState {
         loadHotkey()
         setupHotkeyCallback()
         setupAudioLevelForwarding()
+        mainWindow.configure(appState: self) { [weak self] in
+            self?.openSettings()
+        }
+    }
+
+    // MARK: - Main Window
+
+    func toggleMainWindow() {
+        mainWindow.toggle()
+    }
+
+    func showMainWindow() {
+        mainWindow.show()
+    }
+
+    func openSettings() {
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
     }
 
     // MARK: - Hotkey
@@ -122,6 +143,9 @@ final class AppState {
             guard !Task.isCancelled else { return }
             let result = await self.session.lastResult
             self.lastTranscript = result
+            if !result.isEmpty {
+                self.addHistory(result)
+            }
         }
 
         // Observe phase events from the session
@@ -191,5 +215,15 @@ final class AppState {
             audioLevel: audioLevel,
             transcript: lastTranscript
         )
+    }
+
+    // MARK: - History
+
+    private func addHistory(_ text: String) {
+        let item = HistoryItem(text: text, timestamp: Date())
+        history.insert(item, at: 0)
+        if history.count > 20 {
+            history = Array(history.prefix(20))
+        }
     }
 }

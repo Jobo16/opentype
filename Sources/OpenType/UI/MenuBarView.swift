@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MenuBarView: View {
     @Bindable var appState: AppState
+    @State private var hasAppeared = false
 
     var body: some View {
         // Status + toggle
@@ -36,10 +37,13 @@ struct MenuBarView: View {
                 .foregroundStyle(.secondary)
         }
 
+        Button("主窗口") {
+            appState.toggleMainWindow()
+        }
+        .keyboardShortcut("o", modifiers: [.command])
+
         Button("设置…") {
-            NSApp.activate(ignoringOtherApps: true)
-            // macOS 13+ uses showSettingsWindow: for SwiftUI Settings scene
-            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            appState.openSettings()
         }
         .keyboardShortcut(",", modifiers: [.command])
 
@@ -49,6 +53,13 @@ struct MenuBarView: View {
             NSApp.terminate(nil)
         }
         .keyboardShortcut("q", modifiers: [.command])
+        .onAppear {
+            guard !hasAppeared else { return }
+            hasAppeared = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                appState.showMainWindow()
+            }
+        }
     }
 
     private var statusText: String {
