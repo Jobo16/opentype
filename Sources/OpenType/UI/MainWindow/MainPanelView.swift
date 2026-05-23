@@ -277,6 +277,11 @@ struct MainPanelView: View {
                     LLMSettingsInline()
                 }
 
+                // Hotwords
+                settingsSection("热词管理") {
+                    HotwordManagerView()
+                }
+
                 // Version
                 HStack {
                     Text("版本")
@@ -477,6 +482,7 @@ struct HistoryRecordRow: View {
     @ObservedObject var appState: AppState
     @State private var copied = false
     @State private var showDeleteConfirm = false
+    @State private var showEditSheet = false
 
     private var timeString: String {
         let f = DateFormatter(); f.dateFormat = "HH:mm"
@@ -549,6 +555,16 @@ struct HistoryRecordRow: View {
                 .buttonStyle(.plain)
                 .help("插入到光标位置")
 
+                // Edit (triggers auto-learning)
+                Button {
+                    showEditSheet = true
+                } label: {
+                    Image(systemName: "pencil")
+                        .font(.system(size: 10))
+                }
+                .buttonStyle(.plain)
+                .help("编辑并学习修正")
+
                 // Delete
                 Button {
                     showDeleteConfirm = true
@@ -575,10 +591,221 @@ struct HistoryRecordRow: View {
         .onTapGesture {
             copyToClipboard(record.displayText)
         }
+        .sheet(isPresented: $showEditSheet) {
+            EditHistorySheet(record: record) { editedText in
+                appState.learnFromEdit(original: record.rawText, corrected: editedText)
+            }
+        }
     }
 
     private func copyToClipboard(_ text: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+    }
+}
+
+// MARK: - Hotword Manager View
+
+struct HotwordManagerView: View {
+    @State private var entries: [HotwordStore.Entry] = []
+    @State private var newWord: String = ""
+    @State private var showBulkEdit = false
+    @State private var bulkText: String = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Add single word
+            HStack(spacing: 6) {
+                TextField("添加热词…", text: $newWord)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { addWord() }
+                Button("添加") { addWord() }
+                    .disabled(newWord.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+
+            // Stats + bulk edit
+            HStack {
+                Text("\(entries.count) 个热词")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("批量编辑") { bulkText = entries.map(\.word).joined(separator: "\n"); showBulkEdit = true }
+                    .font(.caption)
+                Button("清空") { entries = []; HotwordStore.shared.clearAll() }
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            // Tag flow
+            if entries.isEmpty {
+                Text("暂无热词，添加后下次识别即生效")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .padding(.vertical, 4)
+            } else {
+                FlowLayout(spacing: 6) {
+                    ForEach(entries) { entry in
+                        HStack(spacing: 4) {
+                            Text(entry.word)
+                                .font(.system(size: 12))
+                            if entry.source == .learned {
+                                Image(systemName: "sparkles")
+                                    .font(.system(size: 8))
+                                    .foregroundStyle(.purple)
+                            }
+                            Button {
+                                removeWord(entry)
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 8))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(entry.source == .learned ? Color.purple.opacity(0.08) : Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+                    }
+                }
+            }
+        }
+        .onAppear { load() }
+        .sheet(isPresented: $showBulkEdit) {
+            VStack(spacing: 12) {
+                Text("批量编辑热词（每行一个）")
+                    .font(.headline)
+                TextEditor(text: $bulkText)
+                    .font(.system(size: 13, design: .monospaced))
+                    .frame(minHeight: 200)
+                    .border(.separator)
+                HStack {
+                    Spacer()
+                    Button("取消") { showBulkEdit = false }
+                    Button("保存") { saveBulk() }
+                }
+            }
+            .padding(20)
+            .frame(width: 360, height: 300)
+        }
+    }
+
+    private func load() {
+        entries = HotwordStore.shared.getAll()
+    }
+
+    private func addWord() {
+        let word = newWord.trimmingCharacters(in: .whitespaces)
+        guard !word.isEmpty else { return }
+        _ = HotwordStore.shared.add(word)
+        newWord = ""
+        load()
+    }
+
+    private func removeWord(_ entry: HotwordStore.Entry) {
+        HotwordStore.shared.remove(id: entry.id)
+        load()
+    }
+
+    private func saveBulk() {
+        let words = bulkText.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        HotwordStore.shared.clearAll()
+        _ = HotwordStore.shared.addBatch(words)
+        showBulkEdit = false
+        load()
+    }
+}
+
+// MARK: - Flow Layout (for tag wrapping)
+
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let result = arrange(proposal: proposal, subviews: subviews)
+        return result.size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let result = arrange(proposal: proposal, subviews: subviews)
+        for (index, origin) in result.origins.enumerated() {
+            subviews[index].place(at: CGPoint(x: bounds.minX + origin.x, y: bounds.minY + origin.y), proposal: .unspecified)
+        }
+    }
+
+    private func arrange(proposal: ProposedViewSize, subviews: Subviews) -> (size: CGSize, origins: [CGPoint]) {
+        let maxWidth = proposal.width ?? .infinity
+        var origins: [CGPoint] = []
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        var totalHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x + size.width > maxWidth, x > 0 {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            origins.append(CGPoint(x: x, y: y))
+            rowHeight = max(rowHeight, size.height)
+            x += size.width + spacing
+            totalHeight = y + rowHeight
+        }
+
+        return (CGSize(width: maxWidth, height: totalHeight), origins)
+    }
+}
+
+// MARK: - Edit History Record Sheet
+
+struct EditHistorySheet: View {
+    let record: HistoryStore.Record
+    let onSave: (String) -> Void
+    @State private var editedText: String
+    @Environment(\.dismiss) private var dismiss
+
+    init(record: HistoryStore.Record, onSave: @escaping (String) -> Void) {
+        self.record = record
+        self.onSave = onSave
+        _editedText = State(initialValue: record.displayText)
+    }
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Text("编辑识别文本")
+                .font(.headline)
+
+            if !record.rawText.isEmpty && record.rawText != record.optimizedText {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("ASR 原文")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(record.rawText)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.tertiary)
+                        .padding(8)
+                        .background(.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
+                }
+            }
+
+            TextEditor(text: $editedText)
+                .font(.system(size: 14))
+                .frame(minHeight: 120)
+                .border(.separator)
+
+            HStack {
+                Spacer()
+                Button("取消") { dismiss() }
+                Button("保存") {
+                    onSave(editedText)
+                    dismiss()
+                }
+                .keyboardShortcut(.return, modifiers: .command)
+            }
+        }
+        .padding(20)
+        .frame(width: 420, height: 300)
     }
 }

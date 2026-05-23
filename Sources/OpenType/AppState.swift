@@ -243,4 +243,22 @@ final class AppState: ObservableObject {
         let injector = TextInjectionEngine()
         Task { try? await injector.inject(text) }
     }
+
+    // MARK: - Auto-learning from edits
+
+    func learnFromEdit(original: String, corrected: String) {
+        let replacements = WordDiff.detectReplacements(original: original, corrected: corrected)
+        guard !replacements.isEmpty else { return }
+
+        logger.info("Detected \(replacements.count) correction(s) from edit")
+
+        Task {
+            for replacement in replacements {
+                let added = await HotwordStore.shared.addWithLLMValidation(replacement.corrected)
+                if added {
+                    logger.info("Auto-learned hotword: \(replacement.corrected)")
+                }
+            }
+        }
+    }
 }

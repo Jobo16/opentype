@@ -29,7 +29,19 @@ enum PromptBuilder {
     只输出处理后的文本，不要解释，不要加引号，不要加任何前缀或后缀说明。
     """
 
-    static func buildPrompt(customPrompt: String? = nil) -> String {
-        customPrompt?.isEmpty == false ? customPrompt! : defaultSystemPrompt
+    static func buildPrompt(customPrompt: String? = nil, hotwords: [String] = []) -> String {
+        var prompt = (customPrompt?.isEmpty == false) ? customPrompt! : defaultSystemPrompt
+
+        if !hotwords.isEmpty {
+            let hotwordBlock = """
+
+            ## 自定义词汇
+            以下词汇请优先使用（语音识别可能误识别为谐音）：
+            \(hotwords.joined(separator: "、"))
+            """
+            prompt += hotwordBlock
+        }
+
+        return prompt
     }
 }
