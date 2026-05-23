@@ -20,3 +20,6 @@ xcuserdata/
 # Credentials & secrets
 *.credentials.json
 *.env
+
+# Nested repo clone
+opentype/
