@@ -2,7 +2,7 @@ import SwiftUI
 
 @main
 struct OpenTypeApp: App {
-    @State private var appState = AppState()
+    @StateObject private var appState = AppState()
 
     var body: some Scene {
         Settings {
@@ -17,7 +17,7 @@ struct OpenTypeApp: App {
     }
 
     init() {
-        _appState = State(initialValue: {
+        _appState = StateObject(wrappedValue: {
             let state = AppState()
             state.setup()
             return state

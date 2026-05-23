@@ -1,12 +1,11 @@
 import Foundation
-import Observation
+import Combine
 import os
 import AppKit
 
 /// Central app state coordinator. Owns the recognition session and hotkey manager.
-@Observable
 @MainActor
-final class AppState {
+final class AppState: ObservableObject {
 
     private let logger = Logger(subsystem: "com.opentype.app", category: "AppState")
 
@@ -34,16 +33,16 @@ final class AppState {
         }
     }
 
-    var phase: Phase = .idle {
+    @Published var phase: Phase = .idle {
         didSet { updateFloatingBar() }
     }
-    var audioLevel: Float = 0 {
+    @Published var audioLevel: Float = 0 {
         didSet { updateFloatingBarLevel() }
     }
-    var lastTranscript: String = ""
-    var errorMessage: String = ""
-    var hotkeyDisplayName: String = "Option+Space"
-    var history: [HistoryItem] = []
+    @Published var lastTranscript: String = ""
+    @Published var errorMessage: String = ""
+    @Published var hotkeyDisplayName: String = "Option+Space"
+    @Published var history: [HistoryItem] = []
 
     // MARK: - Dependencies
 
@@ -61,6 +60,10 @@ final class AppState {
         setupAudioLevelForwarding()
         mainWindow.configure(appState: self) { [weak self] in
             self?.openSettings()
+        }
+        // Show main window after a short delay to let the app fully initialize
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.showMainWindow()
         }
     }
 

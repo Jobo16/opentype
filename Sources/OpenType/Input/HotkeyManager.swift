@@ -1,9 +1,8 @@
 import Cocoa
-import Carbon
 import os
 
-/// Global hotkey manager using CGEvent tap.
-/// Toggle mode: press once to start, press again to stop.
+/// Global hotkey manager. Uses NSEvent monitors for reliable hotkey capture.
+/// Falls back gracefully if accessibility permission is not granted.
 final class HotkeyManager {
 
     private let logger = Logger(subsystem: "com.opentype.hotkey", category: "Hotkey")
@@ -15,7 +14,6 @@ final class HotkeyManager {
     struct Binding: Sendable {
         var modifiers: NSEvent.ModifierFlags
         var keyCode: Int
-        var isToggle: Bool = true
 
         var displayName: String {
             var parts: [String] = []
@@ -53,80 +51,87 @@ final class HotkeyManager {
 
     // MARK: - State
 
-    private var tap: CFMachPort?
-    private var runLoopSource: CFRunLoopSource?
+    private var globalMonitor: Any?
+    private var localMonitor: Any?
     private var healthTimer: Timer?
     private var isEnabled = false
     private var isRecording = false
     private var maxDurationTimer: Timer?
     private static let maxDuration: TimeInterval = 120
-
-    // Static callback context (CGEvent tap requires a C callback)
-    nonisolated(unsafe) static var callbackBinding: Binding?
-    nonisolated(unsafe) static var callbackHandler: (() -> Void)?
+    private var currentBinding: Binding?
 
     // MARK: - Lifecycle
 
     func enable(binding: Binding) {
         disable()
 
-        guard checkAccess() else {
-            logger.warning("Accessibility access not granted")
-            return
-        }
-
-        Self.callbackBinding = binding
-        Self.callbackHandler = { [weak self] in
-            self?.handleToggle()
-        }
-
-        let mask = CGEventMask(1 << CGEventType.keyDown.rawValue)
-        let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
-            options: .defaultTap,
-            eventsOfInterest: mask,
-            callback: hotkeyCallback,
-            userInfo: nil
-        )
-
-        guard let tap else {
-            logger.error("Failed to create CGEvent tap")
-            return
-        }
-
-        self.tap = tap
-        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
-        self.runLoopSource = source
-        self.isEnabled = true
-
+        currentBinding = binding
+        setupMonitors()
         startHealthCheck()
+        isEnabled = true
         logger.info("Hotkey enabled: \(binding.displayName)")
     }
 
     func disable() {
-        if let tap {
-            CGEvent.tapEnable(tap: tap, enable: false)
-            if let source = runLoopSource {
-                CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes)
-            }
+        if let monitor = globalMonitor {
+            NSEvent.removeMonitor(monitor)
+            globalMonitor = nil
         }
-        tap = nil
-        runLoopSource = nil
+        if let monitor = localMonitor {
+            NSEvent.removeMonitor(monitor)
+            localMonitor = nil
+        }
         healthTimer?.invalidate()
         healthTimer = nil
         maxDurationTimer?.invalidate()
         maxDurationTimer = nil
         isEnabled = false
         isRecording = false
-        Self.callbackBinding = nil
-        Self.callbackHandler = nil
+        currentBinding = nil
         logger.info("Hotkey disabled")
     }
 
-    // MARK: - Event handling
+    // MARK: - Event monitors
+
+    private func setupMonitors() {
+        guard let binding = currentBinding else { return }
+
+        // Global monitor: fires when another app is in focus
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            self?.handleKeyEvent(event, binding: binding)
+        }
+
+        // Local monitor: fires when our app is in focus (and can consume the event)
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if self?.matchesBinding(event, binding: binding) == true {
+                self?.handleToggle()
+                return nil  // consume the event when our app is focused
+            }
+            return event
+        }
+
+        logger.info("Global + local monitors installed")
+    }
+
+    private func matchesBinding(_ event: NSEvent, binding: Binding) -> Bool {
+        guard event.keyCode == binding.keyCode else { return false }
+
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        var matched: NSEvent.ModifierFlags = []
+        if flags.contains(.command) { matched.insert(.command) }
+        if flags.contains(.option) { matched.insert(.option) }
+        if flags.contains(.control) { matched.insert(.control) }
+        if flags.contains(.shift) { matched.insert(.shift) }
+
+        return matched == binding.modifiers
+    }
+
+    private func handleKeyEvent(_ event: NSEvent, binding: Binding) {
+        guard matchesBinding(event, binding: binding) else { return }
+        handleToggle()
+    }
+
+    // MARK: - Toggle
 
     private func handleToggle() {
         isRecording.toggle()
@@ -136,17 +141,18 @@ final class HotkeyManager {
             maxDurationTimer?.invalidate()
             maxDurationTimer = nil
         }
+        logger.info("Hotkey toggled, recording=\(self.isRecording)")
         onToggle?()
     }
 
-    // MARK: - Health check
+    // MARK: - Health check: re-install monitors if they died
 
     private func startHealthCheck() {
-        healthTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
-            guard let self, let tap = self.tap else { return }
-            if !self.isEnabled {
-                self.logger.warning("Tap became disabled, re-enabling")
-                CGEvent.tapEnable(tap: tap, enable: true)
+        healthTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            guard let self, self.isEnabled, let binding = self.currentBinding else { return }
+            if self.globalMonitor == nil || self.localMonitor == nil {
+                self.logger.warning("Monitors lost, reinstalling")
+                self.setupMonitors()
             }
         }
     }
@@ -161,57 +167,6 @@ final class HotkeyManager {
             }
         }
     }
-
-    // MARK: - Accessibility check
-
-    private func checkAccess() -> Bool {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
-        return AXIsProcessTrustedWithOptions(options)
-    }
-}
-
-// MARK: - CGEvent tap callback (C function pointer)
-
-private func hotkeyCallback(
-    proxy: CGEventTapProxy,
-    type: CGEventType,
-    event: CGEvent,
-    userInfo: UnsafeMutableRawPointer?
-) -> Unmanaged<CGEvent>? {
-    // Re-enable tap if it gets disabled by the system
-    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-        // The health timer will handle re-enabling
-        return Unmanaged.passRetained(event)
-    }
-
-    guard type == .keyDown else { return Unmanaged.passRetained(event) }
-
-    let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
-    let flags = event.flags
-
-    guard let binding = HotkeyManager.callbackBinding else {
-        return Unmanaged.passRetained(event)
-    }
-
-    // Match key code
-    guard keyCode == binding.keyCode else {
-        return Unmanaged.passRetained(event)
-    }
-
-    // Match modifiers
-    var matched: NSEvent.ModifierFlags = []
-    if flags.contains(.maskCommand) { matched.insert(.command) }
-    if flags.contains(.maskAlternate) { matched.insert(.option) }
-    if flags.contains(.maskControl) { matched.insert(.control) }
-    if flags.contains(.maskShift) { matched.insert(.shift) }
-
-    guard matched == binding.modifiers else {
-        return Unmanaged.passRetained(event)
-    }
-
-    // Swallow the event and trigger callback
-    HotkeyManager.callbackHandler?()
-    return nil
 }
 
 // MARK: - Key code mapping

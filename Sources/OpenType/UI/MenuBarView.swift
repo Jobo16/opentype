@@ -1,8 +1,7 @@
 import SwiftUI
 
 struct MenuBarView: View {
-    @Bindable var appState: AppState
-    @State private var hasAppeared = false
+    @ObservedObject var appState: AppState
 
     var body: some View {
         // Status + toggle
@@ -53,13 +52,6 @@ struct MenuBarView: View {
             NSApp.terminate(nil)
         }
         .keyboardShortcut("q", modifiers: [.command])
-        .onAppear {
-            guard !hasAppeared else { return }
-            hasAppeared = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                appState.showMainWindow()
-            }
-        }
     }
 
     private var statusText: String {

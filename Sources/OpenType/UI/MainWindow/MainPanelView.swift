@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Main control panel view — the primary app window.
 struct MainPanelView: View {
-    @Bindable var appState: AppState
+    @ObservedObject var appState: AppState
     var onOpenSettings: () -> Void
 
     var body: some View {
