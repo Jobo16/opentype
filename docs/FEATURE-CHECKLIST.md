@@ -7,11 +7,11 @@
 
 ## 二、词汇系统
 
-- [ ] **热词（Hotwords）**
-  - [ ] 热词列表数据结构：`[String]`，持久化到 config.json
-  - [ ] ASR 请求中携带热词参数（Volcano bigmodel 接口 `hotwords` 字段）
-  - [ ] 设置界面：热词管理面板（增删改，支持批量导入）
-  - [ ] 热词变更后下次识别立即生效
+- [x] **热词（Hotwords）**
+  - [x] 热词列表数据结构：`[HotwordEntry]`，持久化到 `hotwords.json` — `Services/HotwordStore.swift`
+  - [x] ASR 请求中携带热词参数（Volcano bigmodel 接口 `context.hotwords`）— `Session/RecognitionSession.swift`
+  - [x] 设置界面：热词管理面板（增删改，支持批量导入）— `UI/MainWindow/MainPanelView.swift` → `HotwordManagerView`
+  - [x] 热词变更后下次识别立即生效 — 每次录音前动态加载 `HotwordStore.shared.getAllWords()`
 
 - [ ] **片段替换（Snippets）**
   - [ ] 片段规则数据结构：`[(trigger: String, replacement: String)]`，持久化到 config.json
@@ -19,11 +19,11 @@
   - [ ] 设置界面：片段规则管理面板（增删改）
   - [ ] 支持大小写不敏感匹配
 
-- [ ] **自动学习修正**
-  - [ ] 定义"修正"：用户在 LLM 优化后、粘贴前手动编辑文本（需捕获 diff）
-  - [ ] 修正记录持久化：`(原始识别文本, 用户最终文本, 时间戳)`
-  - [ ] 高频修正词对自动建议加入热词或片段库
-  - [ ] 历史记录中可查看/管理学习到的修正
+- [x] **自动学习修正**
+  - [x] 定义"修正"：用户编辑历史记录文本，捕获 word-level diff — `Services/WordDiff.swift`
+  - [x] 修正记录持久化：热词自动存入 `hotwords.json`，source 标记为 `.learned` — `Services/HotwordStore.swift`
+  - [x] LLM 验证修正合理性 — `HotwordStore.addWithLLMValidation()`
+  - [x] 历史记录中可查看/管理学习到的修正 — 编辑按钮 + 紫色 sparkle 标记
 
 ---
 
@@ -54,11 +54,11 @@
 
 ## 四、数据管理
 
-- [ ] **历史记录**
-  - [ ] 记录数据结构：`(rawText, optimizedText, mode, timestamp, duration)`
-  - [ ] 每次识别完成后自动保存（存入本地 JSON 文件或 SQLite）
-  - [ ] 历史列表界面：按时间倒序，支持滚动加载
-  - [ ] 支持关键词搜索
-  - [ ] 单条记录操作：复制文本、重新插入光标位置、删除
-  - [ ] 导出为 CSV（全部或筛选后）
-  - [ ] 历史记录上限配置（如最多保留 1000 条，超出自动清理最早的）
+- [x] **历史记录**
+  - [x] 记录数据结构：`(rawText, optimizedText, mode, timestamp, duration)` — `Services/HistoryStore.swift`
+  - [x] 每次识别完成后自动保存（存入本地 JSON 文件）— `AppState.saveHistoryRecord()`
+  - [x] 历史列表界面：按时间倒序，支持滚动加载 — `MainPanelView` → `historySection`
+  - [x] 支持关键词搜索 — `HistoryStore.search()` + `MainPanelView` 搜索栏
+  - [x] 单条记录操作：复制文本、重新插入光标位置、删除 — `HistoryRecordRow`
+  - [x] 导出为 CSV（全部或筛选后）— `HistoryStore.exportCSV()`
+  - [x] 历史记录上限配置（最多保留 1000 条，超出自动清理最早的）— `HistoryStore.maxRecords`

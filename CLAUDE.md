@@ -60,7 +60,10 @@ Sources/OpenType/
 ├── Input/
 │   └── HotkeyManager.swift        # Global hotkey via NSEvent monitors
 ├── Services/
-│   └── CredentialService.swift    # JSON credential storage (ASR + LLM)
+│   ├── CredentialService.swift    # JSON credential storage (ASR + LLM)
+│   ├── HistoryStore.swift         # History records persistence + CSV export
+│   ├── HotwordStore.swift         # Hotword management + LLM validation
+│   └── WordDiff.swift             # LCS word-level diff for auto-learning
 └── UI/
     ├── MenuBarView.swift           # Menu bar dropdown menu
     ├── HotKeyField.swift           # NSViewRepresentable hotkey capture field
@@ -92,6 +95,29 @@ DeepSeekClient.chat(systemPrompt, rawText)
 TextInjectionEngine.inject(text)
     ↓ clipboard + Cmd+V
 Done
+```
+
+### Hotword Integration
+
+Hotwords flow through two paths:
+
+1. **ASR**: `HotwordStore.getAllWords()` → `ASRRequestOptions.hotwords` → `VolcProtocol.buildClientRequest()` → `context.hotwords` with `scale: 5.0`
+2. **LLM**: `HotwordStore.getAllWords()` → `PromptBuilder.buildPrompt(hotwords:)` → appended as "自定义词汇" block in system prompt
+
+### Auto-learning Flow
+
+```
+User edits history record text
+    ↓
+WordDiff.detectReplacements(rawText, editedText)
+    ↓ LCS word-level diff
+[("瑞嗯特", "React"), ...]
+    ↓ filter: length >= 2, not punctuation
+HotwordStore.addWithLLMValidation(word)
+    ↓ if LLM configured
+DeepSeek validates: "Is this a valid ASR correction? YES/NO"
+    ↓ if YES (or no LLM)
+HotwordStore.add(word, source: .learned)
 ```
 
 ## ASR Architecture
@@ -191,6 +217,8 @@ Note: Global hotkey uses `NSEvent.addGlobalMonitorForEvents` which does NOT requ
 All credentials stored in JSON at `~/Library/Application Support/OpenType/config.json`:
 - ASR credentials (App ID, Access Token, resource ID)
 - LLM credentials (API Key, model, API base URL)
+- Hotwords (`hotwords.json`) — `[HotwordEntry]` with word, source (.manual/.learned), timestamp
+- History records (`history.json`) — `[Record]` with rawText, optimizedText, mode, timestamp, duration
 
 UserDefaults used for:
 - Hotkey string (`ot_hotkey`)
