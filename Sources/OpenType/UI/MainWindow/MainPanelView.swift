@@ -17,8 +17,10 @@ struct MainPanelView: View {
             // Tab content
             if selectedTab == "record" {
                 recordTab
+                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
             } else {
                 settingsTab
+                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
             }
         }
         .frame(width: 420, height: 480)
@@ -37,7 +39,9 @@ struct MainPanelView: View {
 
     private func tabButton(_ title: String, icon: String, tag: String) -> some View {
         Button {
-            selectedTab = tag
+            withAnimation(.easeInOut(duration: 0.2)) {
+                selectedTab = tag
+            }
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: icon)
@@ -49,8 +53,10 @@ struct MainPanelView: View {
             .padding(.vertical, 6)
             .background(selectedTab == tag ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 6))
             .foregroundStyle(selectedTab == tag ? Color.accentColor : .secondary)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .focusEffectDisabled()
     }
 
     // MARK: - Record Tab
@@ -105,6 +111,7 @@ struct MainPanelView: View {
                 }
             }
             .buttonStyle(.plain)
+            .focusEffectDisabled()
             .scaleEffect(appState.phase == .recording ? 1.05 : 1.0)
             .animation(.easeInOut(duration: 0.2), value: appState.phase == .recording)
 
