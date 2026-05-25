@@ -35,36 +35,44 @@ actor RecognitionSession {
 
     private(set) var phase: Phase = .idle
     private var eventContinuation: AsyncStream<Phase>.Continuation?
-    private var _phaseEvents: AsyncStream<Phase>?
 
-    /// Stream of phase changes for the UI overlay.
+    /// Stream of phase changes for the UI overlay. Resets each session.
+    private var _phaseEvents: AsyncStream<Phase>?
+    private var _phaseContinuation: AsyncStream<Phase>.Continuation?
+
     var phaseEvents: AsyncStream<Phase> {
         if let existing = _phaseEvents { return existing }
         let (stream, continuation) = AsyncStream<Phase>.makeStream()
-        self.eventContinuation = continuation
+        self._phaseContinuation = continuation
         self._phaseEvents = stream
         return stream
     }
 
-    /// Audio level for UI metering.
     nonisolated func setAudioLevelHandler(_ handler: @escaping @Sendable (Float) -> Void) {
         Task { @Sendable in
             await self.audioEngine.setOnAudioLevel(handler)
         }
     }
 
-    /// The raw ASR text (before LLM optimization).
     private(set) var lastRawText: String = ""
-    /// The final text after injection (may include LLM optimization).
     private(set) var lastResult: String = ""
 
     // MARK: - Pipeline
 
     func start(config: any ASRProviderConfig, options: ASRRequestOptions? = nil) async {
-        guard phase == .idle || phase == .done else { return }
+        DebugLog.log("=== Session.start() called, phase=\(String(describing: self.phase)) ===")
+        guard phase == .idle || phase == .done else {
+            DebugLog.log("start() BLOCKED: phase is \(String(describing: self.phase))")
+            return
+        }
+
+        // Reset phaseEvents stream for this session
+        _phaseContinuation?.finish()
+        _phaseEvents = nil
+        _phaseContinuation = nil
+
         setPhase(.recording)
 
-        // Load hotwords for ASR boosting
         let hotwords = HotwordStore.shared.getAllWords()
         var effectiveOptions = options ?? ASRRequestOptions()
         if !hotwords.isEmpty {
@@ -72,27 +80,42 @@ actor RecognitionSession {
         }
 
         do {
-            // 1. Start audio capture.
+            DebugLog.log("Step 1: Starting audio capture...")
             try await audioEngine.start()
+            DebugLog.log("Step 1: Audio capture started")
 
-            // 2. Connect ASR client.
+            DebugLog.log("Step 2: Connecting ASR client (provider=\(String(describing: config.provider)))...")
             guard let client = ASRProviderRegistry.makeClient(for: config.provider) else {
                 setPhase(.error("Unsupported ASR provider"))
                 return
             }
             self.transcriber = client
             try await client.connect(config: config, options: effectiveOptions)
+            DebugLog.log("Step 2: ASR connected, hotwords=\(hotwords.count)")
 
             // 3. Stream audio → ASR until capture stops.
             setPhase(.recording)
+            DebugLog.log("Step 3: Streaming audio to ASR...")
             try await streamAudioToASR(client: client)
+            DebugLog.log("Step 3: Audio stream ended, flushing remaining...")
 
-            // 4. Signal end of audio.
+            // 4. Flush any remaining audio data.
+            let remaining = await audioEngine.flushRemainingBytes()
+            if remaining.count > 100 {
+                try await client.sendAudio(remaining)
+                DebugLog.log("Flushed \(remaining.count) remaining bytes")
+            }
+
+            // 5. Signal end of audio.
+            DebugLog.log("Step 5: Sending endAudio...")
             try await client.endAudio()
+            DebugLog.log("Step 5: endAudio sent")
 
-            // 5. Wait for final transcript.
+            // 6. Wait for final transcript.
             setPhase(.transcribing)
+            DebugLog.log("Step 6: Waiting for final transcript...")
             let finalText = await waitForFinalTranscript(client: client)
+            DebugLog.log("Step 6: Transcript received: \(finalText.count) chars")
             await client.disconnect()
             self.transcriber = nil
 
@@ -103,7 +126,7 @@ actor RecognitionSession {
 
             self.lastRawText = finalText
 
-            // 6. Optional LLM post-processing.
+            // 7. Optional LLM post-processing.
             let processedText: String
             if CredentialService.isLLMEnabled {
                 setPhase(.optimizing)
@@ -112,40 +135,72 @@ actor RecognitionSession {
                 processedText = finalText
             }
 
-            // 7. Inject text into the active app.
+            // 8. Inject text into the active app.
             setPhase(.injecting)
             try await injector.inject(processedText)
             self.lastResult = processedText
             setPhase(.done)
 
         } catch {
-            logger.error("Pipeline failed: \(error.localizedDescription)")
+            DebugLog.log("Pipeline FAILED: \(error.localizedDescription)")
             setPhase(.error(error.localizedDescription))
         }
     }
 
     func cancel() async {
-        await audioEngine.stop()
+        _ = await audioEngine.stop()
         await transcriber?.disconnect()
         self.transcriber = nil
+        _phaseContinuation?.finish()
+        _phaseEvents = nil
+        _phaseContinuation = nil
         setPhase(.idle)
+    }
+
+    /// Stop audio capture only — the pipeline loop will exit and continue to transcribe/inject.
+    func stopRecording() async {
+        _ = await audioEngine.stop()
     }
 
     // MARK: - Helpers
 
     private func streamAudioToASR(client: any SpeechRecognizer) async throws {
-        // Send audio in 200 ms chunks (16 kHz × 0.2 s = 3200 samples = 6400 bytes Float32 → 6400 raw).
-        let chunkSize = 3200  // samples
+        let chunkBytes = 6400  // 3200 samples × 2 bytes (Int16) = 200ms at 16kHz
+        var totalBytes = 0
+        var chunkCount = 0
         while await phase == .recording {
-            let samples = await audioEngine.getRecordedAudio()
-            guard samples.count >= chunkSize else {
-                try await Task.sleep(nanoseconds: 20_000_000)  // 20 ms
+            guard let data = await audioEngine.consumeBytes(count: chunkBytes) else {
+                let active = await audioEngine.isCapturingActive
+                if !active {
+                    DebugLog.log("Audio stopped, exiting stream (sent \(totalBytes) bytes, \(chunkCount) chunks)")
+                    break
+                }
+                try await Task.sleep(nanoseconds: 20_000_000)
                 continue
             }
-            // Send the oldest unsent chunk.
-            let chunk = Array(samples.prefix(chunkSize))
-            let data = chunk.withUnsafeBytes { Data($0) }
+            // Check audio level of this chunk
+            let rms = computeRMS(data)
+            if chunkCount % 50 == 0 {  // log every ~1 second
+                DebugLog.log("Chunk \(chunkCount): \(data.count) bytes, rms=\(String(format:"%.4f",rms)) total=\(totalBytes)")
+            }
             try await client.sendAudio(data)
+            totalBytes += data.count
+            chunkCount += 1
+        }
+        DebugLog.log("streamAudioToASR done: \(totalBytes) bytes, \(chunkCount) chunks")
+    }
+
+    private func computeRMS(_ data: Data) -> Float {
+        let count = data.count / 2  // Int16 = 2 bytes per sample
+        guard count > 0 else { return 0 }
+        var sum: Float = 0
+        return data.withUnsafeBytes { ptr in
+            let samples = ptr.bindMemory(to: Int16.self)
+            for i in 0..<count {
+                let s = Float(samples[i]) / 32768.0
+                sum += s * s
+            }
+            return sqrt(sum / Float(count))
         }
     }
 
@@ -169,7 +224,7 @@ actor RecognitionSession {
 
     private func setPhase(_ newPhase: Phase) {
         self.phase = newPhase
-        eventContinuation?.yield(newPhase)
+        _phaseContinuation?.yield(newPhase)
     }
 
     private func optimizeWithLLM(_ text: String) async -> String {

@@ -53,6 +53,7 @@ final class AppState: ObservableObject {
     let mainWindow = MainWindowController()
     private let historyStore = HistoryStore.shared
     private var phaseTask: Task<Void, Never>?
+    private var eventListenerTask: Task<Void, Never>?
     private var recordingStartTime: Date?
     private var lastRawText: String = ""
 
@@ -103,18 +104,31 @@ final class AppState: ObservableObject {
     func toggleRecording() {
         switch phase {
         case .idle, .done, .error: startRecording()
-        case .recording, .transcribing, .optimizing, .injecting: cancel()
+        case .recording: stopRecording()
+        case .transcribing, .optimizing, .injecting:
+            // Pipeline is still processing, cancel it
+            cancel()
         }
     }
 
+    func stopRecording() {
+        // Stop audio capture — the pipeline loop will exit and continue to transcribe → inject
+        Task { await session.stopRecording() }
+    }
+
     func startRecording() {
-        guard phase == .idle || phase == .done || phase == .error else { return }
+        guard phase == .idle || phase == .done || phase == .error else {
+            DebugLog.log("startRecording BLOCKED: phase=\(phase.label)")
+            return
+        }
 
         guard let config = CredentialService.loadASRConfig(for: .volcano), config.isValid else {
+            DebugLog.log("startRecording FAILED: no valid ASR config")
             errorMessage = "请先在设置中配置火山引擎凭证"
             phase = .error
             return
         }
+        DebugLog.log("startRecording: config loaded, provider=\(config.provider.rawValue)")
 
         lastTranscript = ""
         lastRawText = ""
@@ -135,12 +149,19 @@ final class AppState: ObservableObject {
             self.lastRawText = raw
             self.lastTranscript = optimized.isEmpty ? raw : optimized
 
+            self.logger.info("Pipeline done: raw=\(raw.count) chars, optimized=\(optimized.count) chars")
+            DebugLog.log("AppState: raw=\(raw.count) chars, optimized=\(optimized.count) chars")
             if !raw.isEmpty {
                 self.saveHistoryRecord(raw: raw, optimized: optimized, duration: duration)
+                DebugLog.log("History record saved: \(raw.prefix(30))")
+            } else {
+                DebugLog.log("No raw text, skipping history save")
             }
         }
 
-        Task { [weak self] in
+        // Cancel any previous event listener before starting a new one
+        eventListenerTask?.cancel()
+        eventListenerTask = Task { [weak self] in
             guard let self else { return }
             let events = await self.session.phaseEvents
             for await sessionPhase in events {
@@ -156,6 +177,8 @@ final class AppState: ObservableObject {
     func cancel() {
         phaseTask?.cancel()
         phaseTask = nil
+        eventListenerTask?.cancel()
+        eventListenerTask = nil
         Task { await session.cancel() }
         phase = .idle
     }

@@ -1,31 +1,48 @@
 @preconcurrency import AVFoundation
 import os
 
-/// Captures 16 kHz mono PCM audio from the system default input device.
-///
-/// Audio format: 16 kHz, mono, Float32 samples (normalised to -1…1).
-/// The `onAudioLevel` callback fires ~every 50 ms for UI metering.
+/// Captures 16 kHz mono Int16 PCM audio from the system default input device.
 actor AudioCaptureEngine {
 
     private let logger = Logger(subsystem: "com.opentype.audio", category: "Capture")
+
+    private static let sampleRate: Double = 16000
+    private static let channels: AVAudioChannelCount = 1
+
+    /// Target format: 16 kHz mono Int16 interleaved — matches Volcano ASR `bits: 16`.
+    static let targetFormat = AVAudioFormat(
+        commonFormat: .pcmFormatInt16,
+        sampleRate: sampleRate,
+        channels: channels,
+        interleaved: true
+    )!
 
     private var audioEngine: AVAudioEngine?
     private var inputNode: AVAudioInputNode?
     private var isCapturing = false
 
-    /// Buffered PCM samples (Float32, 16 kHz mono).
-    private var recordedSamples: [Float] = []
+    /// Buffered PCM bytes (Int16, 16 kHz mono).
+    private var recordedBytes = Data()
 
-    /// RMS audio level in 0…1, emitted every ~50 ms.
     private var _onAudioLevel: (@Sendable (Float) -> Void)?
 
     func setOnAudioLevel(_ handler: @escaping @Sendable (Float) -> Void) {
         self._onAudioLevel = handler
     }
 
-    /// Returns the full recorded buffer after capture stops.
-    func getRecordedAudio() -> [Float] {
-        recordedSamples
+    /// Consume and return the next `byteCount` bytes from the buffer.
+    func consumeBytes(count: Int) -> Data? {
+        guard recordedBytes.count >= count else { return nil }
+        let chunk = recordedBytes.prefix(count)
+        recordedBytes.removeFirst(count)
+        return chunk
+    }
+
+    /// Returns the full remaining buffer.
+    func flushRemainingBytes() -> Data {
+        let remaining = recordedBytes
+        recordedBytes.removeAll()
+        return remaining
     }
 
     // MARK: - Start / Stop
@@ -37,38 +54,35 @@ actor AudioCaptureEngine {
         let input = engine.inputNode
         let hwFormat = input.outputFormat(forBus: 0)
 
-        // Target format: 16 kHz mono Float32
-        guard let targetFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: 16000,
-            channels: 1,
-            interleaved: false
-        ) else {
-            throw AudioCaptureError.formatError
-        }
+        let converter = AVAudioConverter(from: hwFormat, to: Self.targetFormat)!
 
-        // Install a tap that converts to 16 kHz mono on the fly.
-        let converter = AVAudioConverter(from: hwFormat, to: targetFormat)!
+        // Buffer for accumulating Int16 bytes from the converter
+        var int16Buffer = Data()
+
         input.installTap(onBus: 0, bufferSize: 4096, format: hwFormat) { [weak self] buffer, time in
             Task { [weak self] in
                 guard let self else { return }
-                let convertedBuffer = AVAudioPCMBuffer(
-                    pcmFormat: targetBufferFormat,
-                    frameCapacity: AVAudioFrameCount(buffer.frameLength)
-                )!
+                guard await self.isCapturingActive else { return }
+
+                let frameCount = AVAudioFrameCount(buffer.frameLength)
+                guard let convertedBuffer = AVAudioPCMBuffer(
+                    pcmFormat: Self.targetFormat,
+                    frameCapacity: frameCount
+                ) else { return }
+
                 var error: NSError?
-                let status = converter.convert(to: convertedBuffer, error: &error) { inNumPackets, outStatus in
+                let status = converter.convert(to: convertedBuffer, error: &error) { _, outStatus in
                     outStatus.pointee = .haveData
                     return buffer
                 }
                 guard status == .haveData else { return }
-                let samples = Array(
-                    UnsafeBufferPointer(
-                        start: convertedBuffer.floatChannelData![0],
-                        count: Int(convertedBuffer.frameLength)
-                    )
-                )
-                await self.processSamples(samples)
+
+                // Extract raw Int16 bytes
+                if let channelData = convertedBuffer.int16ChannelData {
+                    let count = Int(convertedBuffer.frameLength) * MemoryLayout<Int16>.size
+                    let bytes = Data(bytes: channelData[0], count: count)
+                    await self.appendAudioBytes(bytes)
+                }
             }
         }
 
@@ -76,38 +90,45 @@ actor AudioCaptureEngine {
         self.audioEngine = engine
         self.inputNode = input
         self.isCapturing = true
-        self.recordedSamples = []
-        logger.info("Capture started (hw format: \(hwFormat), target: 16 kHz mono)")
+        self.recordedBytes = Data()
+        DebugLog.log("AudioCaptureEngine started (Int16 16kHz mono)")
     }
 
-    // Keep a reference so the converter closure can access it.
-    private let targetBufferFormat = AVAudioFormat(
-        commonFormat: .pcmFormatFloat32,
-        sampleRate: 16000,
-        channels: 1,
-        interleaved: false
-    )!
+    var isCapturingActive: Bool { isCapturing }
 
-    func stop() {
-        guard isCapturing else { return }
+    func stop() -> Data? {
+        guard isCapturing else { return nil }
+        isCapturing = false
         inputNode?.removeTap(onBus: 0)
         audioEngine?.stop()
         audioEngine = nil
         inputNode = nil
-        isCapturing = false
-        logger.info("Capture stopped (\(self.recordedSamples.count) samples)")
+        DebugLog.log("AudioCaptureEngine stopped (\(recordedBytes.count) bytes)")
+        // Save recorded audio to file for debugging
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("opentype_recording.pcm")
+        try? recordedBytes.write(to: url)
+        DebugLog.log("Saved recording to \(url.path) (\(recordedBytes.count) bytes)")
+        let remaining = recordedBytes
+        recordedBytes = Data()
+        return remaining
     }
 
     // MARK: - Internal
 
-    private func processSamples(_ samples: [Float]) {
-        recordedSamples.append(contentsOf: samples)
-        // Compute RMS for level metering (~50 ms window at 16 kHz = 800 samples).
-        let windowSize = min(800, samples.count)
-        guard windowSize > 0 else { return }
-        let slice = samples.suffix(windowSize)
-        let rms = sqrt(slice.reduce(0.0) { $0 + $1 * $1 } / Float(windowSize))
-        let level = min(1.0, rms * 3.0)  // scale for perceptual loudness
+    private func appendAudioBytes(_ bytes: Data) {
+        recordedBytes.append(bytes)
+        let sampleCount = bytes.count / 2
+        guard sampleCount > 0 else { return }
+        var sum: Float = 0
+        bytes.withUnsafeBytes { ptr in
+            let samples = ptr.bindMemory(to: Int16.self)
+            for i in 0..<sampleCount {
+                let s = Float(samples[i]) / 32768.0
+                sum += s * s
+            }
+        }
+        let rms = sqrt(sum / Float(sampleCount))
+        let level = min(1.0, rms * 3.0)
         _onAudioLevel?(level)
     }
 }

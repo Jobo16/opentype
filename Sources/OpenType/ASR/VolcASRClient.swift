@@ -167,13 +167,21 @@ actor VolcASRClient: SpeechRecognizer {
         case .data(let data):
             let headerByte1 = data.count > 1 ? data[1] : 0
             let msgType = (headerByte1 >> 4) & 0x0F
+            let flags = headerByte1 & 0x0F
+
+            DebugLog.log("ASR recv: type=0x\(String(msgType, radix:16)) flags=0x\(String(flags, radix:16)) size=\(data.count) hex=\(data.prefix(20).map{String(format:"%02x",$0)}.joined(separator:" "))")
 
             if msgType == 0x0F {
-                if audioPacketCount == 0 {
-                    do {
-                        _ = try VolcProtocol.decodeServerResponse(data)
-                    } catch {
-                        emitEvent(.error(error))
+                // Server error — try to extract error info
+                DebugLog.log("ASR ERROR 0x0F: raw bytes=\(data.map { String(format: "%02x", $0) }.prefix(40).joined(separator: " "))")
+                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    DebugLog.log("ASR server error JSON: \(json)")
+                } else if data.count > 8 {
+                    let payload = data[data.startIndex+8..<data.endIndex]
+                    if let json = try? JSONSerialization.jsonObject(with: payload) as? [String: Any] {
+                        DebugLog.log("ASR server error (parsed): code=\(json["code"] ?? "?"), msg=\(json["message"] ?? "?")")
+                    } else {
+                        DebugLog.log("ASR server error: could not parse \(data.count) bytes")
                     }
                 }
                 emitEvent(.completed)
@@ -184,13 +192,26 @@ actor VolcASRClient: SpeechRecognizer {
 
             do {
                 let response = try VolcProtocol.decodeServerResponse(data)
+                let uttsDesc = response.result.utterances.map { "\($0.text)(\($0.definite ? "F" : "P"))" }.joined(separator: ",")
+                DebugLog.log("ASR JSON: text=\"\(response.result.text)\" utts=[\(uttsDesc)] flags=\(response.header.flags.rawValue)")
+                // Also log raw JSON payload for second responses
+                if response.header.flags.rawValue == 0x03 && data.count > 12 {
+                    let payloadStart = data.startIndex + 12
+                    if let rawStr = String(data: data[payloadStart...], encoding: .utf8) {
+                        DebugLog.log("ASR rawJSON: \(rawStr.prefix(500))")
+                    }
+                }
+                let isFinalResponse = response.header.flags == .asyncFinal
+                    || response.header.flags == .negativeSequenceLast
                 let transcript = makeTranscript(
                     from: response.result,
-                    isFinal: response.header.flags == .asyncFinal
+                    isFinal: isFinalResponse
                 )
-                guard transcript != lastTranscript else { return }
-                lastTranscript = transcript
-                emitEvent(.transcript(transcript))
+                // Always emit if final, or if text changed
+                if isFinalResponse || transcript != lastTranscript {
+                    lastTranscript = transcript
+                    emitEvent(.transcript(transcript))
+                }
             } catch {
                 emitEvent(.error(error))
             }
